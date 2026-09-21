@@ -10,6 +10,12 @@ on:
         description: 'dia ou mes'
         required: true
         default: 'dia'
+        type: choice
+        options: [dia, mes]
+      data:
+        description: 'Data especifica para teste (AAAA-MM-DD ou AAAA-MM). Vazio = hoje'
+        required: false
+        default: ''
 
 jobs:
   gerar:
@@ -19,38 +25,45 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Instalar dependencias
-        run: npm install puppeteer@23
+        run: |
+          npm init -y
+          npm install puppeteer@23 --no-audit --no-fund
 
       - name: Definir modo (dia ou mes)
         id: modo
         run: |
           if [ "${{ github.event.schedule }}" = "0 4 1 * *" ]; then
-            echo "valor=mes" >> $GITHUB_OUTPUT
+            echo "valor=mes" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ github.event.inputs.modo }}" ]; then
-            echo "valor=${{ github.event.inputs.modo }}" >> $GITHUB_OUTPUT
+            echo "valor=${{ github.event.inputs.modo }}" >> "$GITHUB_OUTPUT"
           else
-            echo "valor=dia" >> $GITHUB_OUTPUT
+            echo "valor=dia" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Gerar o PDF direto do site
         env:
           SITE_URL: https://lucasbitto.github.io/FluxogramaArtes/
+          DATA_ALVO: ${{ github.event.inputs.data }}
         run: node scripts/gerar-pdf.js ${{ steps.modo.outputs.valor }}
 
+      - name: Guardar copia do PDF no GitHub
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-${{ steps.modo.outputs.valor }}
+          path: scripts/saida/*.pdf
+          if-no-files-found: warn
+          retention-days: 90
+
+      # So tenta o OneDrive se os segredos ja estiverem cadastrados.
       - name: Enviar para o OneDrive
+        if: ${{ env.MS_CLIENT_ID != '' }}
         env:
           MS_TENANT_ID:     ${{ secrets.MS_TENANT_ID }}
           MS_CLIENT_ID:     ${{ secrets.MS_CLIENT_ID }}
           MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
           MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
         run: node scripts/enviar-onedrive.js
-
-      - name: Guardar copia no proprio GitHub (backup)
-        uses: actions/upload-artifact@v4
-        with:
-          name: relatorio-${{ steps.modo.outputs.valor }}
-          path: scripts/saida/*.pdf
-          retention-days: 90
