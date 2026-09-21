@@ -20,6 +20,13 @@ on:
 jobs:
   gerar:
     runs-on: ubuntu-latest
+    env:
+      MS_TENANT_ID:     ${{ secrets.MS_TENANT_ID }}
+      MS_CLIENT_ID:     ${{ secrets.MS_CLIENT_ID }}
+      MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+      MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
+      RELAY_URL:        ${{ secrets.RELAY_URL }}
+      RELAY_TOKEN:      ${{ secrets.RELAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,11 +66,15 @@ jobs:
           retention-days: 90
 
       # So tenta o OneDrive se os segredos ja estiverem cadastrados.
+      - name: Entregar o PDF (ponte por e-mail)
+        if: ${{ env.RELAY_URL != '' }}
+        run: node scripts/enviar-email.js
+
+      # Caminho direto, usado apenas se um dia a TI liberar o registro no Azure.
       - name: Enviar para o OneDrive
-        if: ${{ env.MS_CLIENT_ID != '' }}
-        env:
-          MS_TENANT_ID:     ${{ secrets.MS_TENANT_ID }}
-          MS_CLIENT_ID:     ${{ secrets.MS_CLIENT_ID }}
-          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
-          MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
+        if: ${{ env.MS_CLIENT_ID != '' && env.MS_REFRESH_TOKEN != '' }}
         run: node scripts/enviar-onedrive.js
+
+      - name: Aviso (nenhuma entrega configurada)
+        if: ${{ env.RELAY_URL == '' && env.MS_CLIENT_ID == '' }}
+        run: echo "PDF gerado com sucesso, mas nenhuma entrega esta configurada. Cadastre RELAY_URL e RELAY_TOKEN em Settings > Secrets and variables > Actions. O PDF continua disponivel nos artefatos desta execucao." 
