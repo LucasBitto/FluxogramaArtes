@@ -1,0 +1,56 @@
+name: Relatorios Fluxo de Artes (PDF -> OneDrive)
+
+on:
+  schedule:
+    - cron: '50 2 * * *'    # 23:50 de Brasilia (fim do dia)
+    - cron: '0 4 1 * *'     # 01:00 de Brasilia do dia 1 (fecha o mes anterior)
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'dia ou mes'
+        required: true
+        default: 'dia'
+
+jobs:
+  gerar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias
+        run: npm install puppeteer@23
+
+      - name: Definir modo (dia ou mes)
+        id: modo
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 4 1 * *" ]; then
+            echo "valor=mes" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.inputs.modo }}" ]; then
+            echo "valor=${{ github.event.inputs.modo }}" >> $GITHUB_OUTPUT
+          else
+            echo "valor=dia" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gerar o PDF direto do site
+        env:
+          SITE_URL: https://lucasbitto.github.io/FluxogramaArtes/
+        run: node scripts/gerar-pdf.js ${{ steps.modo.outputs.valor }}
+
+      - name: Enviar para o OneDrive
+        env:
+          MS_TENANT_ID:     ${{ secrets.MS_TENANT_ID }}
+          MS_CLIENT_ID:     ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          MS_REFRESH_TOKEN: ${{ secrets.MS_REFRESH_TOKEN }}
+        run: node scripts/enviar-onedrive.js
+
+      - name: Guardar copia no proprio GitHub (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-${{ steps.modo.outputs.valor }}
+          path: scripts/saida/*.pdf
+          retention-days: 90
