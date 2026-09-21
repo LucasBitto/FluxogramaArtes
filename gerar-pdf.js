@@ -14,6 +14,7 @@ const puppeteer = require('puppeteer');
 const SITE = process.env.SITE_URL || 'https://lucasbitto.github.io/FluxogramaArtes/';
 const TZ = 'America/Sao_Paulo';
 const MODO = (process.argv[2] || 'dia').toLowerCase();
+const DATA_FORCADA = (process.env.DATA_ALVO || '').trim();   // opcional: AAAA-MM-DD ou AAAA-MM
 const SAIDA = path.join(__dirname, 'saida');
 
 function hojeBR() {
@@ -30,8 +31,10 @@ function mesAnterior() {
 }
 
 (async () => {
-  const dia = hojeBR();
-  const mes = MODO === 'mes' ? mesAnterior() : dia.slice(0, 7);
+  const dia = (MODO === 'dia' && /^\d{4}-\d{2}-\d{2}$/.test(DATA_FORCADA)) ? DATA_FORCADA : hojeBR();
+  const mes = MODO === 'mes'
+    ? (/^\d{4}-\d{2}$/.test(DATA_FORCADA) ? DATA_FORCADA : mesAnterior())
+    : dia.slice(0, 7);
   const nome = MODO === 'mes'
     ? `Fluxo-Artes_MES_${mes}.pdf`
     : `Fluxo-Artes_DIA_${dia}.pdf`;
@@ -69,14 +72,28 @@ function mesAnterior() {
   });
   await new Promise(r => setTimeout(r, 1500));
 
-  const ok = await page.evaluate((modo, dia, mes) => {
+  // Diagnostico: o que o site realmente carregou
+  const diag = await page.evaluate(() => ({
+    sync: (document.getElementById('sync') || {}).textContent || '',
+    meses: [...((document.getElementById('month') || {}).options || [])].map(o => o.value),
+    dias: [...document.querySelectorAll('[id^="d20"]')].map(e => e.id.slice(1))
+  }));
+  console.log('Sincronizacao:', diag.sync);
+  console.log('Meses disponiveis no relatorio:', diag.meses.join(', ') || '(nenhum)');
+
+  const mesAlvo = MODO === 'mes' ? mes : dia.slice(0, 7);
+  if (diag.meses.length && !diag.meses.includes(mesAlvo)) {
+    console.log(`SEM DADOS: nao ha nenhuma arte lancada em ${mesAlvo}. Nada a gerar hoje.`);
+    await browser.close();
+    process.exit(0);
+  }
+
+  // Seleciona o periodo e redesenha o relatorio
+  await page.evaluate((modo, dia, mesAlvo) => {
     const sel = document.getElementById('month');
-    if (sel) {
-      const alvo = modo === 'mes' ? mes : dia.slice(0, 7);
-      if ([...sel.options].some(o => o.value === alvo || o.text === alvo)) {
-        sel.value = alvo;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-      }
+    if (sel && [...sel.options].some(o => o.value === mesAlvo)) {
+      sel.value = mesAlvo;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
     }
     const inp = document.getElementById('date');
     if (inp && modo === 'dia') {
@@ -84,6 +101,32 @@ function mesAnterior() {
       inp.dispatchEvent(new Event('change', { bubbles: true }));
     }
     if (typeof window.renderReports === 'function') window.renderReports();
+  }, MODO, dia, mesAlvo);
+  await new Promise(r => setTimeout(r, 2500));
+
+  if (MODO === 'dia') {
+    const temDia = await page.evaluate(d => !!document.getElementById('d' + d.replaceAll('-', '')), dia);
+    if (!temDia) {
+      const dias = await page.evaluate(() =>
+        [...document.querySelectorAll('[id^="d20"]')].map(e => e.id.slice(1)).sort().reverse());
+      const legivel = dias.map(x => `${x.slice(6)}/${x.slice(4, 6)}/${x.slice(0, 4)}`);
+      console.log(`SEM DADOS: nenhuma arte lancada em ${dia}.`);
+      console.log('Ultimos dias com producao:', legivel.slice(0, 5).join(', ') || '(nenhum)');
+      await browser.close();
+      process.exit(0);
+    }
+  }
+
+  // Captura os avisos (toast) do proprio site, para aparecerem no log
+  await page.evaluate(() => {
+    window.__avisos = [];
+    if (typeof window.toast === 'function') {
+      const orig = window.toast;
+      window.toast = m => { window.__avisos.push(String(m)); return orig(m); };
+    }
+  });
+
+  const ok = await page.evaluate((modo, dia) => {
     if (modo === 'mes') {
       const b = document.getElementById('printMonth');
       if (!b) return 'botao do mes nao encontrado';
@@ -96,7 +139,7 @@ function mesAnterior() {
       b.click();
     }
     return 'ok';
-  }, MODO, dia, mes);
+  }, MODO, dia);
 
   if (ok !== 'ok') throw new Error('Nao foi possivel disparar a geracao: ' + ok);
 
@@ -105,7 +148,10 @@ function mesAnterior() {
 
   const temConteudo = await page.evaluate(() =>
     document.body.classList.contains('print-day') || document.body.classList.contains('print-month'));
-  if (!temConteudo) throw new Error('O site nao entrou em modo de impressao (provavelmente nao ha dados no periodo).');
+  if (!temConteudo) {
+    const avisos = await page.evaluate(() => (window.__avisos || []).join(' | '));
+    throw new Error('O site nao entrou em modo de impressao. Aviso do site: ' + (avisos || '(nenhum)'));
+  }
 
   const destino = path.join(SAIDA, nome);
   await page.pdf({
